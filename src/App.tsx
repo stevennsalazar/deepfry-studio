@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 
+// DeepFry Studio — Free build (no Pro UI)
+// Features: upload/drag&drop, live sliders, presets (Film/Lo-Fi/VHS/Ultra), Reset, Make Another, Download JPG
+
 type PresetType = 'none'|'film'|'lofi'|'vhs'|'ultra';
 
 export default function DeepFryStudio() {
@@ -7,23 +10,20 @@ export default function DeepFryStudio() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [imageBitmap, setImageBitmap] = useState<ImageBitmap | null>(null);
 
-  // FREE adjustments
+  // Adjustments
   const [brightness, setBrightness] = useState<number>(120);
   const [contrast, setContrast] = useState<number>(120);
   const [saturation, setSaturation] = useState<number>(140);
   const [hue, setHue] = useState<number>(0);
-  const [sharp, setSharp] = useState<number>(1);
   const [noise, setNoise] = useState<number>(0.08);
   const [posterize, setPosterize] = useState<number>(0);
   const [preset, setPreset] = useState<PresetType>('none');
 
+  // Export sizing (canvas size)
   const [outW, setOutW] = useState<number>(0);
   const [outH, setOutH] = useState<number>(0);
 
-  // Pro modal visibility
-  const [showPro, setShowPro] = useState(false);
-
-  // Size image for canvas
+  // Size image on load
   useEffect(() => {
     if (!imageBitmap) return;
     const max = 1600;
@@ -42,7 +42,7 @@ export default function DeepFryStudio() {
     canvas.width = outW || imageBitmap.width;
     canvas.height = outH || imageBitmap.height;
 
-    // 1) Base CSS-like filters in an offscreen canvas
+    // 1) Base filters in offscreen canvas
     const work = document.createElement('canvas');
     work.width = canvas.width; work.height = canvas.height;
     const wctx = work.getContext('2d')! as any;
@@ -54,7 +54,7 @@ export default function DeepFryStudio() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(work, 0, 0);
 
-    // 3) Posterize
+    // 3) Posterize (quantize)
     if (posterize > 1) {
       const img = ctx.getImageData(0,0,canvas.width,canvas.height);
       const d = img.data; const step = 255/(posterize-1);
@@ -89,9 +89,9 @@ export default function DeepFryStudio() {
       drawScanlines(ctx,canvas.width,canvas.height,0.25);
       drawChromAb(ctx,canvas.width,canvas.height);
     }
-  }, [imageBitmap, outW, outH, brightness, contrast, saturation, hue, sharp, noise, posterize, preset]);
+  }, [imageBitmap, outW, outH, brightness, contrast, saturation, hue, noise, posterize, preset]);
 
-  // ---------- Helpers ----------
+  // Helpers
   function clamp(v: number){ return Math.max(0, Math.min(255, v)); }
   function roundStep(v: number, step: number){ return Math.round(v/step)*step; }
   function drawVignette(ctx: CanvasRenderingContext2D, w:number, h:number, s:number){
@@ -104,52 +104,47 @@ export default function DeepFryStudio() {
     g.addColorStop(0,'rgba(255,200,100,0.75)'); g.addColorStop(0.3,'rgba(255,120,0,0.35)'); g.addColorStop(1,'rgba(0,0,0,0)');
     ctx.save(); ctx.globalCompositeOperation='screen'; ctx.fillStyle=g; ctx.fillRect(0,0,w,h); ctx.restore();
   }
-  function drawScanlines(ctx: CanvasRenderingContext2D, w:number, h:number, o:number){
-    ctx.save(); ctx.globalAlpha=o; ctx.fillStyle='#000'; for(let y=0;y<h;y+=2) ctx.fillRect(0,y,w,1); ctx.restore();
-  }
-  function drawChromAb(ctx: CanvasRenderingContext2D, w:number, h:number){
-    const tmp=document.createElement('canvas'); tmp.width=w; tmp.height=h;
-    const x=tmp.getContext('2d')!; x.drawImage(ctx.canvas,0,0);
-    ctx.save(); ctx.globalCompositeOperation='screen';
-    ctx.globalAlpha=0.35; ctx.drawImage(tmp,1,0);
-    ctx.globalAlpha=0.35; ctx.drawImage(tmp,-1,0);
-    ctx.restore();
-  }
+  function drawScanlines(ctx: CanvasRenderingContext2D, w:number, h:number, o:number){ ctx.save(); ctx.globalAlpha=o; ctx.fillStyle='#000'; for(let y=0;y<h;y+=2) ctx.fillRect(0,y,w,1); ctx.restore(); }
+  function drawChromAb(ctx: CanvasRenderingContext2D, w:number, h:number){ const tmp=document.createElement('canvas'); tmp.width=w; tmp.height=h; const x=tmp.getContext('2d')!; x.drawImage(ctx.canvas,0,0); ctx.save(); ctx.globalCompositeOperation='screen'; ctx.globalAlpha=0.35; ctx.drawImage(tmp,1,0); ctx.globalAlpha=0.35; ctx.drawImage(tmp,-1,0); ctx.restore(); }
 
-  // ---------- File handling ----------
+  // File handling
   function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]; if (!f) return;
     ;(window as any).createImageBitmap(f).then((bmp: ImageBitmap) => setImageBitmap(bmp));
   }
+  function onDragOver(e: React.DragEvent) { e.preventDefault(); }
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault(); const f = (e as any).dataTransfer?.files?.[0] as File | undefined;
+    if (f) (window as any).createImageBitmap(f).then((bmp: ImageBitmap) => setImageBitmap(bmp));
+  }
 
-  // ---------- Actions ----------
+  // Actions
   function handleDownload() {
     const canvas = canvasRef.current; if (!canvas) return;
+    if (canvas.width === 0 || canvas.height === 0) { alert('Nothing to download yet.'); return; }
     const link = document.createElement('a');
     link.download = 'deepfry.jpg';
     link.href = canvas.toDataURL('image/jpeg', 0.9);
     document.body.appendChild(link); link.click(); setTimeout(()=>link.remove(),0);
   }
-
   function handleReset() {
-    setBrightness(120); setContrast(120); setSaturation(140); setHue(0); setSharp(1); setNoise(0.08); setPosterize(0); setPreset('none');
+    setBrightness(120); setContrast(120); setSaturation(140); setHue(0); setNoise(0.08); setPosterize(0); setPreset('none');
   }
-
   function handleMakeAnother() {
     handleReset(); setImageBitmap(null); setTimeout(() => fileInputRef.current?.click(), 0);
   }
 
   function applyPreset(p: PresetType){
     setPreset(p);
-    if (p==='film')  { setBrightness(115); setContrast(130); setSaturation(150); setHue(10); setSharp(1); setNoise(0.12); setPosterize(0); }
-    else if (p==='lofi'){ setBrightness(110); setContrast(95);  setSaturation(70);  setHue(8);  setSharp(0); setNoise(0.06); setPosterize(0); }
-    else if (p==='vhs')  { setBrightness(115); setContrast(130); setSaturation(120); setHue(0);  setSharp(1); setNoise(0.08); setPosterize(0); }
-    else if (p==='ultra'){ setBrightness(160); setContrast(200); setSaturation(220); setHue(20); setSharp(3); setNoise(0.2);  setPosterize(6); }
+    if (p==='film')  { setBrightness(115); setContrast(130); setSaturation(150); setHue(10); setNoise(0.12); setPosterize(0); }
+    else if (p==='lofi'){ setBrightness(110); setContrast(95);  setSaturation(70);  setHue(8);  setNoise(0.06); setPosterize(0); }
+    else if (p==='vhs')  { setBrightness(115); setContrast(130); setSaturation(120); setHue(0);  setNoise(0.08); setPosterize(0); }
+    else if (p==='ultra'){ setBrightness(160); setContrast(200); setSaturation(220); setHue(20); setNoise(0.2);  setPosterize(6); }
     else if (p==='none'){ handleReset(); }
   }
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100">
+    <div className="min-h-screen bg-neutral-950 text-neutral-100" onDragOver={onDragOver} onDrop={onDrop}>
       <header className="sticky top-0 z-30 backdrop-blur border-b border-white/10 bg-neutral-950/70">
         <div className="max-w-6xl mx-auto px-2 sm:px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -198,9 +193,38 @@ export default function DeepFryStudio() {
               <button onClick={()=>applyPreset('none')}  className={`px-3 py-1.5 rounded-lg border ${preset==='none'  ? 'bg-white text-black' : 'bg-white/10 border-white/10'}`}>None</button>
             </div>
           </details>
+
+          {/* Mobile adjustments */}
+          <details className="sm:hidden mt-2 rounded-xl border border-white/10 bg-white/5" open>
+            <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold">Adjustments</summary>
+            <div className="px-4 pb-4">
+              {[
+                { label:`Brightness: ${brightness}%`, min:50, max:250, step:1, val:brightness, set:setBrightness },
+                { label:`Contrast: ${contrast}%`, min:50, max:250, step:1, val:contrast, set:setContrast },
+                { label:`Saturation: ${saturation}%`, min:0, max:300, step:1, val:saturation, set:setSaturation },
+                { label:`Hue: ${hue}°`, min:-180, max:180, step:1, val:hue, set:setHue },
+                { label:`Noise: ${(noise*100).toFixed(0)}%`, min:0, max:1, step:0.01, val:noise, set:setNoise },
+                { label:`Posterize: ${posterize || 'off'}`, min:0, max:8, step:1, val:posterize, set:setPosterize },
+              ].map((s,i)=> (
+                <label key={i} className="block mb-4 text-xs">
+                  <div className="mb-1 text-neutral-300">{s.label}</div>
+                  <input
+                    type="range"
+                    min={s.min}
+                    max={s.max}
+                    step={s.step}
+                    value={s.val as number}
+                    onInput={(e:any)=>s.set(parseFloat(e.target.value))}
+                    onChange={(e:any)=>s.set(parseFloat(e.target.value))}
+                    className="w-full h-4 accent-white"
+                  />
+                </label>
+              ))}
+            </div>
+          </details>
         </section>
 
-        {/* Sidebar */}
+        {/* Desktop sidebar */}
         <aside className="hidden sm:block lg:col-span-4 space-y-4">
           <div className="rounded-2xl border border-white/10 p-4 bg-white/5">
             <h2 className="text-sm font-semibold mb-3">Presets</h2>
@@ -214,6 +238,32 @@ export default function DeepFryStudio() {
           </div>
 
           <div className="rounded-2xl border border-white/10 p-4 bg-white/5">
+            <h2 className="text-sm font-semibold mb-3">Adjustments</h2>
+            {[
+              { label:`Brightness: ${brightness}%`, min:50, max:250, step:1, val:brightness, set:setBrightness },
+              { label:`Contrast: ${contrast}%`, min:50, max:250, step:1, val:contrast, set:setContrast },
+              { label:`Saturation: ${saturation}%`, min:0, max:300, step:1, val:saturation, set:setSaturation },
+              { label:`Hue: ${hue}°`, min:-180, max:180, step:1, val:hue, set:setHue },
+              { label:`Noise: ${(noise*100).toFixed(0)}%`, min:0, max:1, step:0.01, val:noise, set:setNoise },
+              { label:`Posterize levels: ${posterize || 'off'}`, min:0, max:8, step:1, val:posterize, set:setPosterize },
+            ].map((s,i)=> (
+              <label key={i} className="block mb-3 text-xs">
+                <div className="mb-1 text-neutral-300">{s.label}</div>
+                <input
+                  type="range"
+                  min={s.min}
+                  max={s.max}
+                  step={s.step}
+                  value={s.val as number}
+                  onInput={(e:any)=>s.set(parseFloat(e.target.value))}
+                  onChange={(e:any)=>s.set(parseFloat(e.target.value))}
+                  className="w-full accent-white"
+                />
+              </label>
+            ))}
+          </div>
+
+          <div className="rounded-2xl border border-white/10 p-4 bg-white/5">
             <h2 className="text-sm font-semibold mb-3">Download</h2>
             <div className="grid gap-2">
               <button onClick={handleDownload} disabled={!imageBitmap} className="px-3 py-2 rounded-xl bg-white text-black text-sm font-semibold hover:bg-neutral-200 transition shadow disabled:opacity-40">Download JPG</button>
@@ -224,49 +274,9 @@ export default function DeepFryStudio() {
       </main>
 
       <footer className="max-w-6xl mx-auto px-2 sm:px-4 pb-10 text-xs text-neutral-400">
-        <div className="border-t border-white/10 pt-4 flex items-center justify-between">
-          <p>Made with ❤️ for memes</p>
-          <p>Drag, tweak, fry, download.</p>
-        </div>
+        <div className="border-t border-white/10 pt-4 flex items-center justify-between"><p>Made with ❤️ for memes</p><p>Drag, tweak, fry, download.</p></div>
       </footer>
-
-      {/* Floating Pro teaser button */}
-      <button
-        onClick={() => setShowPro(true)}
-        className="fixed bottom-4 right-4 z-40 px-4 py-2 rounded-2xl shadow-lg bg-amber-400 text-black text-sm font-semibold hover:bg-amber-300 active:scale-95 transition"
-        aria-label="Upgrade to Pro"
-      >
-        ⭐ Pro Features
-      </button>
-
-      {/* Pro modal */}
-      {showPro && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-neutral-900 rounded-2xl p-6 max-w-md w-full border border-white/10">
-            <h2 className="text-lg font-semibold mb-4">DeepFry Studio Pro</h2>
-            <ul className="text-sm text-neutral-300 mb-4 list-disc pl-5 space-y-1">
-              <li>Export PNG/WebP/AVIF with quality controls</li>
-              <li>Resize & batch conversion</li>
-              <li>Extra presets & VHS overlays</li>
-              <li>No ads</li>
-            </ul>
-            <div className="flex gap-3">
-              <button
-                onClick={()=>setShowPro(false)}
-                className="flex-1 px-3 py-2 rounded-xl bg-white/10 text-sm font-medium hover:bg-white/20"
-              >
-                Maybe later
-              </button>
-              <button
-                onClick={()=>{/* Hook up checkout later */}}
-                className="flex-1 px-3 py-2 rounded-xl bg-amber-500 text-black text-sm font-semibold hover:bg-amber-400"
-              >
-                Upgrade
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
+
