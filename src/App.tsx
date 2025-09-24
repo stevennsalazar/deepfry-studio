@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 
-// DeepFry Studio — Free build (no Pro UI)
-// Features: upload/drag&drop, live sliders, presets (Film/Lo-Fi/VHS/Ultra), Reset, Make Another, Download JPG
+// DeepFry Studio — Free build
+// Brightness (to 400% with gain boost on mobile) + Exposure (EV) added
+// Smooth sliders via onInput; mobile/desktop UIs; presets; download/reset
 
 type PresetType = 'none'|'film'|'lofi'|'vhs'|'ultra';
 
@@ -11,15 +12,16 @@ export default function DeepFryStudio() {
   const [imageBitmap, setImageBitmap] = useState<ImageBitmap | null>(null);
 
   // Adjustments
-  const [brightness, setBrightness] = useState<number>(120);
-  const [contrast, setContrast] = useState<number>(120);
-  const [saturation, setSaturation] = useState<number>(140);
-  const [hue, setHue] = useState<number>(0);
-  const [noise, setNoise] = useState<number>(0.08);
-  const [posterize, setPosterize] = useState<number>(0);
-  const [preset, setPreset] = useState<PresetType>('none');
+  const [brightness, setBrightness]   = useState<number>(120); // 50–400 (%)
+  const [contrast, setContrast]       = useState<number>(120); // %
+  const [saturation, setSaturation]   = useState<number>(140); // %
+  const [hue, setHue]                 = useState<number>(0);   // deg
+  const [exposureEV, setExposureEV]   = useState<number>(0);   // -2.0 .. +2.0 (stops)
+  const [noise, setNoise]             = useState<number>(0.08);// 0..1
+  const [posterize, setPosterize]     = useState<number>(0);   // 0..8
+  const [preset, setPreset]           = useState<PresetType>('none');
 
-  // Export sizing (canvas size)
+  // Sizing
   const [outW, setOutW] = useState<number>(0);
   const [outH, setOutH] = useState<number>(0);
 
@@ -32,8 +34,13 @@ export default function DeepFryStudio() {
     setOutH(Math.round(imageBitmap.height * scale));
   }, [imageBitmap]);
 
-  // Render pipeline
+  // Render whenever inputs change
   useEffect(() => {
+    renderFrame();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageBitmap, outW, outH, brightness, contrast, saturation, hue, exposureEV, noise, posterize, preset]);
+
+  function renderFrame() {
     if (!imageBitmap) return;
     const canvas = canvasRef.current; if (!canvas) return;
     const ctx = (canvas.getContext('2d', { willReadFrequently: true } as any) as CanvasRenderingContext2D) || canvas.getContext('2d');
@@ -42,44 +49,72 @@ export default function DeepFryStudio() {
     canvas.width = outW || imageBitmap.width;
     canvas.height = outH || imageBitmap.height;
 
-    // 1) Base filters in offscreen canvas
+    // Work canvas (do filtering here first)
     const work = document.createElement('canvas');
     work.width = canvas.width; work.height = canvas.height;
     const wctx = work.getContext('2d')! as any;
-    wctx.filter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) hue-rotate(${hue}deg)`;
+
+    // CSS filter pass — cap brightness at 200% (mobile browsers saturate above this)
+    const cssB = Math.min(brightness, 200);
+    wctx.filter = `brightness(${cssB}%) contrast(${contrast}%) saturate(${saturation}%) hue-rotate(${hue}deg)`;
     wctx.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
     wctx.filter = 'none';
 
-    // 2) Draw to visible canvas
+    // Decide if we need a pixel pass (exposure, extra brightness >200, posterize, noise)
+    const needsPixel =
+      exposureEV !== 0 ||
+      brightness > 200 ||
+      (posterize && posterize > 1) ||
+      (noise && noise > 0);
+
+    if (needsPixel) {
+      const img = wctx.getImageData(0, 0, canvas.width, canvas.height);
+      const d = img.data;
+
+      // Exposure gain (linear, per stop: gain = 2^EV)
+      const exposureGain = Math.pow(2, exposureEV);
+
+      // Extra brightness gain beyond 200%
+      const extraGain = Math.max(1, brightness / 200); // 200% => 1.0, 400% => 2.0
+
+      // Posterize step
+      const doPosterize = posterize && posterize > 1;
+      const step = doPosterize ? 255 / (posterize - 1) : 0;
+
+      // Noise scale
+      const doNoise = noise && noise > 0;
+      const noiseAmp = doNoise ? noise * 255 : 0;
+
+      for (let i = 0; i < d.length; i += 4) {
+        // combined linear gain
+        let r = d[i]   * exposureGain * extraGain;
+        let g = d[i+1] * exposureGain * extraGain;
+        let b = d[i+2] * exposureGain * extraGain;
+
+        if (doPosterize) {
+          r = roundStep(r, step);
+          g = roundStep(g, step);
+          b = roundStep(b, step);
+        }
+
+        if (doNoise) {
+          const n = (Math.random() - 0.5) * 2 * noiseAmp;
+          r += n; g += n; b += n;
+        }
+
+        d[i]   = clamp(r);
+        d[i+1] = clamp(g);
+        d[i+2] = clamp(b);
+        // d[i+3] alpha unchanged
+      }
+      wctx.putImageData(img, 0, 0);
+    }
+
+    // Blit to visible canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(work, 0, 0);
 
-    // 3) Posterize (quantize)
-    if (posterize > 1) {
-      const img = ctx.getImageData(0,0,canvas.width,canvas.height);
-      const d = img.data; const step = 255/(posterize-1);
-      for (let i=0;i<d.length;i+=4){
-        d[i]   = roundStep(d[i], step);
-        d[i+1] = roundStep(d[i+1], step);
-        d[i+2] = roundStep(d[i+2], step);
-      }
-      ctx.putImageData(img,0,0);
-    }
-
-    // 4) Noise
-    if (noise > 0) {
-      const img = ctx.getImageData(0,0,canvas.width,canvas.height);
-      const d = img.data; const s = noise * 255;
-      for (let i=0;i<d.length;i+=4){
-        const n = (Math.random()-0.5)*2*s;
-        d[i]   = clamp(d[i]   + n);
-        d[i+1] = clamp(d[i+1] + n);
-        d[i+2] = clamp(d[i+2] + n);
-      }
-      ctx.putImageData(img,0,0);
-    }
-
-    // 5) Preset overlays
+    // Preset overlays (inexpensive)
     if (preset==='film') { drawVignette(ctx,canvas.width,canvas.height,0.5); drawFilmBurn(ctx,canvas.width,canvas.height); }
     if (preset==='lofi') { drawVignette(ctx,canvas.width,canvas.height,0.7); }
     if (preset==='vhs')  { drawScanlines(ctx,canvas.width,canvas.height,0.18); drawChromAb(ctx,canvas.width,canvas.height); }
@@ -89,10 +124,10 @@ export default function DeepFryStudio() {
       drawScanlines(ctx,canvas.width,canvas.height,0.25);
       drawChromAb(ctx,canvas.width,canvas.height);
     }
-  }, [imageBitmap, outW, outH, brightness, contrast, saturation, hue, noise, posterize, preset]);
+  }
 
   // Helpers
-  function clamp(v: number){ return Math.max(0, Math.min(255, v)); }
+  function clamp(v: number){ return Math.max(0, Math.min(255, v|0)); }
   function roundStep(v: number, step: number){ return Math.round(v/step)*step; }
   function drawVignette(ctx: CanvasRenderingContext2D, w:number, h:number, s:number){
     const g=ctx.createRadialGradient(w/2,h/2,Math.min(w,h)*0.2, w/2,h/2,Math.max(w,h)*0.7);
@@ -110,7 +145,17 @@ export default function DeepFryStudio() {
   // File handling
   function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]; if (!f) return;
-    ;(window as any).createImageBitmap(f).then((bmp: ImageBitmap) => setImageBitmap(bmp));
+    (window as any).createImageBitmap(f).then((bmp: ImageBitmap) => setImageBitmap(bmp));
+  }
+  function loadDemo(){
+    const c = document.createElement('canvas'); c.width = 640; c.height = 800;
+    const x = c.getContext('2d')!;
+    const g = x.createLinearGradient(0,0,640,800);
+    g.addColorStop(0,'#ff8a00'); g.addColorStop(1,'#6a00ff');
+    x.fillStyle = g; x.fillRect(0,0,640,800);
+    x.fillStyle = 'rgba(255,255,255,0.9)'; x.font = '48px system-ui';
+    x.fillText('Demo Image', 200, 400);
+    (window as any).createImageBitmap(c).then((bmp: ImageBitmap)=> setImageBitmap(bmp));
   }
   function onDragOver(e: React.DragEvent) { e.preventDefault(); }
   function onDrop(e: React.DragEvent) {
@@ -128,7 +173,7 @@ export default function DeepFryStudio() {
     document.body.appendChild(link); link.click(); setTimeout(()=>link.remove(),0);
   }
   function handleReset() {
-    setBrightness(120); setContrast(120); setSaturation(140); setHue(0); setNoise(0.08); setPosterize(0); setPreset('none');
+    setBrightness(120); setContrast(120); setSaturation(140); setHue(0); setExposureEV(0); setNoise(0.08); setPosterize(0); setPreset('none');
   }
   function handleMakeAnother() {
     handleReset(); setImageBitmap(null); setTimeout(() => fileInputRef.current?.click(), 0);
@@ -136,13 +181,14 @@ export default function DeepFryStudio() {
 
   function applyPreset(p: PresetType){
     setPreset(p);
-    if (p==='film')  { setBrightness(115); setContrast(130); setSaturation(150); setHue(10); setNoise(0.12); setPosterize(0); }
-    else if (p==='lofi'){ setBrightness(110); setContrast(95);  setSaturation(70);  setHue(8);  setNoise(0.06); setPosterize(0); }
-    else if (p==='vhs')  { setBrightness(115); setContrast(130); setSaturation(120); setHue(0);  setNoise(0.08); setPosterize(0); }
-    else if (p==='ultra'){ setBrightness(160); setContrast(200); setSaturation(220); setHue(20); setNoise(0.2);  setPosterize(6); }
+    if (p==='film')  { setBrightness(115); setContrast(130); setSaturation(150); setHue(10); setExposureEV(0.2); setNoise(0.12); setPosterize(0); }
+    else if (p==='lofi'){ setBrightness(110); setContrast(95);  setSaturation(70);  setHue(8);  setExposureEV(-0.1); setNoise(0.06); setPosterize(0); }
+    else if (p==='vhs')  { setBrightness(115); setContrast(130); setSaturation(120); setHue(0);  setExposureEV(0);    setNoise(0.08); setPosterize(0); }
+    else if (p==='ultra'){ setBrightness(200); setContrast(200); setSaturation(220); setHue(20); setExposureEV(0.8); setNoise(0.2);  setPosterize(6); }
     else if (p==='none'){ handleReset(); }
   }
 
+  // UI
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100" onDragOver={onDragOver} onDrop={onDrop}>
       <header className="sticky top-0 z-30 backdrop-blur border-b border-white/10 bg-neutral-950/70">
@@ -167,7 +213,10 @@ export default function DeepFryStudio() {
               <div className="text-center p-6 sm:p-8">
                 <p className="text-base sm:text-lg font-medium mb-1 sm:mb-2">Drop an image here</p>
                 <p className="text-xs sm:text-sm text-neutral-300 mb-3 sm:mb-4">or choose a file</p>
-                <button onClick={()=>fileInputRef.current?.click()} className="px-3 sm:px-4 py-2 rounded-xl bg-white text-black text-sm font-semibold hover:bg-neutral-200 transition shadow">Upload</button>
+                <div className="flex justify-center gap-2">
+                  <button onClick={()=>fileInputRef.current?.click()} className="px-3 sm:px-4 py-2 rounded-xl bg-white text-black text-sm font-semibold hover:bg-neutral-200 transition shadow">Upload</button>
+                  <button onClick={loadDemo} className="px-3 sm:px-4 py-2 rounded-xl bg-white/10 border border-white/10 text-sm hover:bg-white/20">Load Demo</button>
+                </div>
                 <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onFile} />
               </div>
             ) : (
@@ -199,10 +248,11 @@ export default function DeepFryStudio() {
             <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold">Adjustments</summary>
             <div className="px-4 pb-4">
               {[
-                { label:`Brightness: ${brightness}%`, min:50, max:250, step:1, val:brightness, set:setBrightness },
+                { label:`Brightness: ${brightness}%`, min:50, max:400, step:1, val:brightness, set:setBrightness },
                 { label:`Contrast: ${contrast}%`, min:50, max:250, step:1, val:contrast, set:setContrast },
                 { label:`Saturation: ${saturation}%`, min:0, max:300, step:1, val:saturation, set:setSaturation },
                 { label:`Hue: ${hue}°`, min:-180, max:180, step:1, val:hue, set:setHue },
+                { label:`Exposure: ${exposureEV>=0?'+':''}${exposureEV.toFixed(1)} EV`, min:-2, max:2, step:0.1, val:exposureEV, set:setExposureEV },
                 { label:`Noise: ${(noise*100).toFixed(0)}%`, min:0, max:1, step:0.01, val:noise, set:setNoise },
                 { label:`Posterize: ${posterize || 'off'}`, min:0, max:8, step:1, val:posterize, set:setPosterize },
               ].map((s,i)=> (
@@ -210,12 +260,11 @@ export default function DeepFryStudio() {
                   <div className="mb-1 text-neutral-300">{s.label}</div>
                   <input
                     type="range"
-                    min={s.min}
-                    max={s.max}
-                    step={s.step}
+                    min={s.min as number}
+                    max={s.max as number}
+                    step={s.step as number}
                     value={s.val as number}
-                    onInput={(e:any)=>s.set(parseFloat(e.target.value))}
-                    onChange={(e:any)=>s.set(parseFloat(e.target.value))}
+                    onInput={(e:any)=> s.set(parseFloat(e.target.value))}
                     className="w-full h-4 accent-white"
                   />
                 </label>
@@ -240,10 +289,11 @@ export default function DeepFryStudio() {
           <div className="rounded-2xl border border-white/10 p-4 bg-white/5">
             <h2 className="text-sm font-semibold mb-3">Adjustments</h2>
             {[
-              { label:`Brightness: ${brightness}%`, min:50, max:250, step:1, val:brightness, set:setBrightness },
+              { label:`Brightness: ${brightness}%`, min:50, max:400, step:1, val:brightness, set:setBrightness },
               { label:`Contrast: ${contrast}%`, min:50, max:250, step:1, val:contrast, set:setContrast },
               { label:`Saturation: ${saturation}%`, min:0, max:300, step:1, val:saturation, set:setSaturation },
               { label:`Hue: ${hue}°`, min:-180, max:180, step:1, val:hue, set:setHue },
+              { label:`Exposure: ${exposureEV>=0?'+':''}${exposureEV.toFixed(1)} EV`, min:-2, max:2, step:0.1, val:exposureEV, set:setExposureEV },
               { label:`Noise: ${(noise*100).toFixed(0)}%`, min:0, max:1, step:0.01, val:noise, set:setNoise },
               { label:`Posterize levels: ${posterize || 'off'}`, min:0, max:8, step:1, val:posterize, set:setPosterize },
             ].map((s,i)=> (
@@ -251,12 +301,11 @@ export default function DeepFryStudio() {
                 <div className="mb-1 text-neutral-300">{s.label}</div>
                 <input
                   type="range"
-                  min={s.min}
-                  max={s.max}
-                  step={s.step}
+                  min={s.min as number}
+                  max={s.max as number}
+                  step={s.step as number}
                   value={s.val as number}
-                  onInput={(e:any)=>s.set(parseFloat(e.target.value))}
-                  onChange={(e:any)=>s.set(parseFloat(e.target.value))}
+                  onInput={(e:any)=> s.set(parseFloat(e.target.value))}
                   className="w-full accent-white"
                 />
               </label>
@@ -279,4 +328,3 @@ export default function DeepFryStudio() {
     </div>
   );
 }
-
